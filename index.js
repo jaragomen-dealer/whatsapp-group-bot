@@ -10,7 +10,9 @@ let grupoId = "120363424015495900@g.us";
 
 // 🔥 CLIENTE WHATSAPP
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({
+    clientId: "pastoral-bot"
+  }),
   puppeteer: {
     headless: true,
     args: [
@@ -45,8 +47,8 @@ client.on("message", (msg) => {
 });
 
 // 🔹 ERROR HANDLING
-client.on("auth_failure", () => {
-  console.log("❌ Error de autenticación. Regenera el código QR.");
+client.on('auth_failure', msg => {
+  console.error('❌ Error de autenticación:', msg);
 });
 
 client.on("disconnected", (reason) => {
