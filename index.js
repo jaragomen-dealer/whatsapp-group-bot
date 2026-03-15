@@ -5,95 +5,90 @@ const qrcode = require('qrcode');
 const app = express();
 app.use(express.json());
 
-// 🔥 PON AQUÍ EL ID DEL GRUPO (cuando lo saques)
-let grupoId = "120363424015495900@g.us";
+// 🔥 CLIENTE WHATSAPP con reconexión automática
+let client;
 
-// 🔥 CLIENTE WHATSAPP
-const client = new Client({
-  authStrategy: new LocalAuth({
-    clientId: "pastoral-bot"
-  }),
-  puppeteer: {
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--disable-gpu',
-      '--single-process' // Importante para Railway
-    ],
-  }
-});
+function iniciarCliente() {
 
-// 🔹 QR
-client.on('qr', async (qr) => {
-  console.log('📲 Escanea este link:');
-  const qrUrl = await qrcode.toDataURL(qr);
-  console.log(qrUrl);
-});
+  client = new Client({
+    authStrategy: new LocalAuth({
+      clientId: "pastoral-bot"
+    }),
+    puppeteer: {
+      executablePath: '/usr/bin/chromium',
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu'
+      ]
+    }
+  });
 
-// 🔹 READY
-client.on("ready", () => {
-  console.log("✅ WhatsApp listo!");
-});
+  // 🔹 QR
+  client.on('qr', async (qr) => {
+    console.log('📲 Escanea este link:');
+    const qrUrl = await qrcode.toDataURL(qr);
+    console.log(qrUrl);
+  });
 
-// 🔥 ESCUCHAR MENSAJES (para obtener ID del grupo)
-client.on("message", (msg) => {
-  console.log("📩 Mensaje recibido de:", msg.from);
-  console.log("💬 Texto:", msg.body);
-});
+  client.on('ready', () => {
+    console.log('✅ WhatsApp listo!');
+  });
 
-// 🔹 ERROR HANDLING
-client.on('auth_failure', msg => {
-  console.error('❌ Error de autenticación:', msg);
-});
+  client.on('disconnected', (reason) => {
+    console.log('⚠️ WhatsApp desconectado:', reason);
+    console.log('🔄 Reconectando...');
+    setTimeout(() => {
+      iniciarCliente();
+    }, 5000);
+  });
 
-client.on("disconnected", (reason) => {
-  console.log("❌ Cliente desconectado:", reason);
-});
+  client.on('auth_failure', msg => {
+    console.error('❌ Error de autenticación:', msg);
+  });
 
-// 🔹 INICIALIZAR
-console.log("⏳ Inicializando cliente de WhatsApp...");
-client.initialize().catch((err) => {
-  console.error("❌ Error al inicializar:", err.message);
-  // No matar el proceso, solo loggear el error
-});
+  client.initialize();
+}
 
+// Iniciar cliente
+console.log('⏳ Inicializando bot de WhatsApp...');
+iniciarCliente();
 
-// 🔥 ENDPOINT PARA n8n
-app.post("/run-automatizacion", async (req, res) => {
+// 🔥 ENDPOINT PARA AUTOMATIZACIÓN
+app.post('/run-automatizacion', async (req, res) => {
   try {
 
-    const message = req.body.message;
-
-    if (!grupoId) {
-      return res.status(400).json({
+    if (!client || !client.info) {
+      return res.status(500).json({
         error: true,
-        message: "❌ Aún no has puesto el ID del grupo"
+        message: 'WhatsApp no está listo'
       });
     }
 
-    if (!message) {
-      return res.status(400).json({
+    const chats = await client.getChats();
+    const grupo = chats.find(c => c.isGroup);
+
+    if (!grupo) {
+      return res.status(404).json({
         error: true,
-        message: "❌ Falta el mensaje"
+        message: 'Grupo no encontrado'
       });
     }
 
-    await client.sendMessage(grupoId, message);
-
-    console.log("✅ Mensaje enviado:", message);
+    await grupo.sendMessage('🔥 Mensaje automático desde la pastoral');
 
     res.json({
       ok: true,
-      message: "Mensaje enviado correctamente"
+      message: 'Mensaje enviado'
     });
 
   } catch (error) {
-    console.log("❌ Error:", error.message);
+    console.error('❌ Error enviando:', error.message);
 
     res.status(500).json({
       error: true,
@@ -102,12 +97,10 @@ app.post("/run-automatizacion", async (req, res) => {
   }
 });
 
-
 // 🔹 RUTA TEST
 app.get("/", (req, res) => {
   res.send("🔥 Bot Pastoral funcionando correctamente");
 });
-
 
 // 🔹 SERVIDOR
 const PORT = process.env.PORT || 3000;
