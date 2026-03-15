@@ -10,7 +10,10 @@ let grupoId = "120363424015495900@g.us";
 
 // 🔥 CLIENTE WHATSAPP
 const client = new Client({
-  authStrategy: new LocalAuth()
+  authStrategy: new LocalAuth(),
+  puppeteer: {
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  }
 });
 
 // 🔹 QR
