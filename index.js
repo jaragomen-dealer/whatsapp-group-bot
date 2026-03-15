@@ -12,6 +12,7 @@ let grupoId = "120363424015495900@g.us";
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
+    headless: true,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -19,7 +20,8 @@ const client = new Client({
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
-      '--disable-gpu'
+      '--disable-gpu',
+      '--single-process' // Importante para Railway
     ],
   }
 });
@@ -52,7 +54,10 @@ client.on("disconnected", (reason) => {
 
 // 🔹 INICIALIZAR
 console.log("⏳ Inicializando cliente de WhatsApp...");
-client.initialize();
+client.initialize().catch((err) => {
+  console.error("❌ Error al inicializar:", err.message);
+  // No matar el proceso, solo loggear el error
+});
 
 
 // 🔥 ENDPOINT PARA n8n

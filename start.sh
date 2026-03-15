@@ -1,30 +1,12 @@
 #!/bin/bash
-set -e
 
-echo "📦 Instalando dependencias del sistema..."
+# Esperar un momento para evitar reinicios rápidos
+sleep 2
 
-apt-get update > /dev/null 2>&1
-apt-get install -y \
-  libglib2.0-0 \
-  libnss3 \
-  libatk1.0-0 \
-  libatk-bridge2.0-0 \
-  libcups2 \
-  libdrm2 \
-  libxkbcommon0 \
-  libxcomposite1 \
-  libxdamage1 \
-  libxfixes3 \
-  libxrandr2 \
-  libgbm1 \
-  libasound2 \
-  libpangocairo-1.0-0 \
-  libpango-1.0-0 \
-  libcairo2 \
-  libatspi2.0-0 \
-  > /dev/null 2>&1
+echo "📦 Instalando dependencias..."
+apt-get update -qq > /dev/null 2>&1
+apt-get install -y -qq libglib2.0-0 libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpangocairo-1.0-0 libpango-1.0-0 libcairo2 libatspi2.0-0 > /dev/null 2>&1
 
-echo "✅ Dependencias instaladas"
-
+echo "✅ Listo"
 echo "🚀 Iniciando bot..."
 node index.js
