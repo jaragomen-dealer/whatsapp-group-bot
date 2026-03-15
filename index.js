@@ -1,7 +1,7 @@
-const express = require("express");
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, delay } = require("@whiskeysockets/baileys");
-const { Boom } = require("@hapi/boom");
-const qrcode = require('qrcode');
+import express from "express";
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, delay } from "@whiskeysockets/baileys";
+import { Boom } from "@hapi/boom";
+import qrcode from 'qrcode';
 
 const app = express();
 app.use(express.json());
@@ -10,6 +10,7 @@ app.use(express.json());
 let sock = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
+let currentQR = null;
 
 // Función para conectar a WhatsApp
 async function connectToWhatsApp() {
@@ -33,7 +34,11 @@ async function connectToWhatsApp() {
 
       if (qr) {
         console.log('📲 QR Generado - Ve a: http://localhost:3000/qr');
-        // QR disponible para el endpoint visual
+        try {
+          currentQR = await qrcode.toDataURL(qr);
+        } catch (err) {
+          console.error('Error generando QR:', err.message);
+        }
       }
 
       if (connection === 'close') {
@@ -53,6 +58,7 @@ async function connectToWhatsApp() {
       } else if (connection === 'open') {
         console.log('✅ WhatsApp conectado!');
         reconnectAttempts = 0;
+        currentQR = null;
       }
     });
 
@@ -66,27 +72,6 @@ async function connectToWhatsApp() {
     }
   }
 }
-
-// Variable para el QR actual
-let currentQR = null;
-
-// Modificar la función para capturar el QR
-const originalMakeWASocket = makeWASocket;
-// @ts-ignore
-makeWASocket = function(options) {
-  const sock = originalMakeWASocket(options);
-
-  // Interceptar el evento de QR
-  sock.ev.on('connection.update', (update) => {
-    if (update.qr) {
-      qrcode.toDataURL(update.qr).then(qrUrl => {
-        currentQR = qrUrl;
-      });
-    }
-  });
-
-  return sock;
-};
 
 // Iniciar conexión
 console.log('⏳ Inicializando bot de WhatsApp...');
@@ -132,7 +117,7 @@ app.get('/qr', (req, res) => {
         <div class="container">
           <h1>🔥 Bot Pastoral</h1>
           <p class="message">
-            ${currentQR === null ? '✅ WhatsApp ya está conectado' : '⏳ Esperando QR...'}
+            ${sock && sock.user ? '✅ WhatsApp ya está conectado' : '⏳ Esperando QR...'}
           </p>
           <p class="message" style="font-size: 14px; margin-top: 20px;">
             <a href="/" style="color: #667eea;">Volver al inicio</a>
@@ -217,7 +202,7 @@ app.get('/qr', (req, res) => {
 // 🔥 ENDPOINT /send-group - Simplificado y estable
 app.post('/send-group', async (req, res) => {
   try {
-    // Validar que sock existe
+    // Validar que sock existe y está conectado
     if (!sock) {
       return res.status(500).json({
         error: true,
@@ -235,11 +220,11 @@ app.post('/send-group', async (req, res) => {
       });
     }
 
-    // Obtener todos los chats
-    const chats = await sock.groupFetchAllParticipating();
+    // Obtener todos los grupos
+    const groups = await sock.groupFetchAllParticipating();
 
     // Obtener el primer grupo
-    const groupIds = Object.keys(chats);
+    const groupIds = Object.keys(groups);
 
     if (groupIds.length === 0) {
       return res.status(404).json({
@@ -263,7 +248,7 @@ app.post('/send-group', async (req, res) => {
     console.error('❌ Error enviando mensaje:', error.message);
 
     // Manejar errores específicos de Baileys
-    if (error.message.includes('Connection not open')) {
+    if (error.message.includes('Connection not open') || error.message.includes('socket not open')) {
       return res.status(503).json({
         error: true,
         message: 'WhatsApp no está conectado. Intenta nuevamente en unos segundos.'
@@ -287,8 +272,8 @@ app.post('/run-automatizacion', async (req, res) => {
       });
     }
 
-    const chats = await sock.groupFetchAllParticipating();
-    const groupIds = Object.keys(chats);
+    const groups = await sock.groupFetchAllParticipating();
+    const groupIds = Object.keys(groups);
 
     if (groupIds.length === 0) {
       return res.status(404).json({
@@ -308,7 +293,7 @@ app.post('/run-automatizacion', async (req, res) => {
   } catch (error) {
     console.error('❌ Error:', error.message);
 
-    if (error.message.includes('Connection not open')) {
+    if (error.message.includes('Connection not open') || error.message.includes('socket not open')) {
       return res.status(503).json({
         error: true,
         message: 'WhatsApp no está conectado'
