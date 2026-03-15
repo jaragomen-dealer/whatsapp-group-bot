@@ -1,6 +1,13 @@
 node_modules/
-.wwebjs_auth/
 .wwebjs_cache/
 .env
 *.log
 .DS_Store
+
+# Excluir caché de Chrome dentro de .wwebjs_auth pero permitir la sesión
+.wwebjs_auth/**/Default/
+.wwebjs_auth/**/Cache*/
+.wwebjs_auth/**/GPUPersistentCache/
+.wwebjs_auth/**/component_crx_cache/
+.wwebjs_auth/**/extensions_crx_cache/
+.wwebjs_auth/**/Crashpad/
