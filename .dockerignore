@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log
+.wwebjs_auth
+.wwebjs_cache
+.git
+.gitignore
+.env
+README.md
+RAILWAY.md
+RAILWAY-SETUP.md
+SOLUTION.md
+build.sh
+railway.sh
+start.sh
