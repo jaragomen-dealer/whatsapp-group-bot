@@ -1,1 +1,1 @@
-web: bash build.sh && node index.js
+web: node index.js

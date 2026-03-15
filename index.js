@@ -12,7 +12,15 @@ let grupoId = "120363424015495900@g.us";
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-gpu'
+    ],
   }
 });
 
@@ -33,7 +41,17 @@ client.on("message", (msg) => {
   console.log("💬 Texto:", msg.body);
 });
 
+// 🔹 ERROR HANDLING
+client.on("auth_failure", () => {
+  console.log("❌ Error de autenticación. Regenera el código QR.");
+});
+
+client.on("disconnected", (reason) => {
+  console.log("❌ Cliente desconectado:", reason);
+});
+
 // 🔹 INICIALIZAR
+console.log("⏳ Inicializando cliente de WhatsApp...");
 client.initialize();
 
 
