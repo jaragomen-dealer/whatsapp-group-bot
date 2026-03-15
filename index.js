@@ -1,72 +1,96 @@
 const express = require("express");
-const { Client, LocalAuth } = require("whatsapp-web.js");
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, delay } = require("@whiskeysockets/baileys");
+const { Boom } = require("@hapi/boom");
 const qrcode = require('qrcode');
 
 const app = express();
 app.use(express.json());
 
-// Variable global para guardar el QR
-let currentQR = null;
+// Variable global para el socket
+let sock = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
 
-// 🔥 CLIENTE WHATSAPP con reconexión automática
-let client;
+// Función para conectar a WhatsApp
+async function connectToWhatsApp() {
+  try {
+    // Usar múltiples archivos para autenticación
+    const { state, saveCreds } = await useMultiFileAuthState('.wwebjs_auth');
 
-function iniciarCliente() {
+    // Crear socket de WhatsApp
+    sock = makeWASocket({
+      auth: state,
+      printQRInTerminal: false,
+      browser: ["Pastoral Bot", "Chrome", "1.0.0"]
+    });
 
-  const puppeteerConfig = {
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--disable-gpu'
-    ]
-  };
+    // Guardar credenciales cuando se actualicen
+    sock.ev.on('creds.update', saveCreds);
 
-  // Solo usar executablePath en Linux/Railway
-  if (process.platform !== 'win32') {
-    puppeteerConfig.executablePath = '/usr/bin/chromium';
+    // Manejar actualizaciones de conexión
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        console.log('📲 QR Generado - Ve a: http://localhost:3000/qr');
+        // QR disponible para el endpoint visual
+      }
+
+      if (connection === 'close') {
+        const shouldReconnect = lastDisconnect?.error instanceof Boom &&
+          lastDisconnect.error.output?.statusCode !== DisconnectReason.loggedOut;
+
+        console.log('❌ Conexión cerrada:', lastDisconnect?.error?.message);
+
+        if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+          reconnectAttempts++;
+          console.log(`🔄 Reconectando... (intento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+          await delay(5000);
+          connectToWhatsApp();
+        } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+          console.log('❌ Máximo de intentos de reconexión alcanzados');
+        }
+      } else if (connection === 'open') {
+        console.log('✅ WhatsApp conectado!');
+        reconnectAttempts = 0;
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error al conectar:', error.message);
+    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts++;
+      console.log(`🔄 Reconectando... (intento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+      await delay(5000);
+      connectToWhatsApp();
+    }
   }
-
-  client = new Client({
-    authStrategy: new LocalAuth({
-      clientId: "pastoral-bot"
-    }),
-    puppeteer: puppeteerConfig
-  });
-
-  // 🔹 QR
-  client.on('qr', async (qr) => {
-    console.log('📲 QR Generado - Ve a: http://localhost:3000/qr');
-    currentQR = await qrcode.toDataURL(qr);
-  });
-
-  client.on('ready', () => {
-    console.log('✅ WhatsApp listo!');
-    currentQR = null; // Limpiar QR cuando está listo
-  });
-
-  client.on('disconnected', (reason) => {
-    console.log('⚠️ WhatsApp desconectado:', reason);
-    console.log('🔄 Reconectando...');
-    setTimeout(() => {
-      iniciarCliente();
-    }, 5000);
-  });
-
-  client.on('auth_failure', msg => {
-    console.error('❌ Error de autenticación:', msg);
-  });
-
-  client.initialize();
 }
 
-// Iniciar cliente
+// Variable para el QR actual
+let currentQR = null;
+
+// Modificar la función para capturar el QR
+const originalMakeWASocket = makeWASocket;
+// @ts-ignore
+makeWASocket = function(options) {
+  const sock = originalMakeWASocket(options);
+
+  // Interceptar el evento de QR
+  sock.ev.on('connection.update', (update) => {
+    if (update.qr) {
+      qrcode.toDataURL(update.qr).then(qrUrl => {
+        currentQR = qrUrl;
+      });
+    }
+  });
+
+  return sock;
+};
+
+// Iniciar conexión
 console.log('⏳ Inicializando bot de WhatsApp...');
-iniciarCliente();
+connectToWhatsApp();
 
 // 🔥 ENDPOINT QR - Muestra el QR visualmente
 app.get('/qr', (req, res) => {
@@ -190,29 +214,91 @@ app.get('/qr', (req, res) => {
   `);
 });
 
-// 🔥 ENDPOINT PARA AUTOMATIZACIÓN
-app.post('/run-automatizacion', async (req, res) => {
+// 🔥 ENDPOINT /send-group - Simplificado y estable
+app.post('/send-group', async (req, res) => {
   try {
-
-    if (!client || !client.info) {
+    // Validar que sock existe
+    if (!sock) {
       return res.status(500).json({
         error: true,
-        message: 'WhatsApp no está listo'
+        message: 'Socket no inicializado'
       });
     }
 
-    const chats = await client.getChats();
+    // Obtener mensaje del body
+    const { message } = req.body;
 
-    const grupo = chats.find(chat => chat.isGroup);
+    if (!message) {
+      return res.status(400).json({
+        error: true,
+        message: 'Mensaje es requerido'
+      });
+    }
 
-    if (!grupo) {
+    // Obtener todos los chats
+    const chats = await sock.groupFetchAllParticipating();
+
+    // Obtener el primer grupo
+    const groupIds = Object.keys(chats);
+
+    if (groupIds.length === 0) {
       return res.status(404).json({
         error: true,
         message: 'No se encontró ningún grupo'
       });
     }
 
-    await grupo.sendMessage('🔥 Mensaje automático desde la pastoral');
+    // Usar el primer grupo
+    const groupId = groupIds[0];
+
+    // Enviar mensaje
+    await sock.sendMessage(groupId, { text: message });
+
+    res.json({
+      ok: true,
+      message: 'Mensaje enviado correctamente'
+    });
+
+  } catch (error) {
+    console.error('❌ Error enviando mensaje:', error.message);
+
+    // Manejar errores específicos de Baileys
+    if (error.message.includes('Connection not open')) {
+      return res.status(503).json({
+        error: true,
+        message: 'WhatsApp no está conectado. Intenta nuevamente en unos segundos.'
+      });
+    }
+
+    res.status(500).json({
+      error: true,
+      message: error.message
+    });
+  }
+});
+
+// Endpoint legacy /run-automatizacion (redirige a /send-group)
+app.post('/run-automatizacion', async (req, res) => {
+  try {
+    if (!sock) {
+      return res.status(500).json({
+        error: true,
+        message: 'Socket no inicializado'
+      });
+    }
+
+    const chats = await sock.groupFetchAllParticipating();
+    const groupIds = Object.keys(chats);
+
+    if (groupIds.length === 0) {
+      return res.status(404).json({
+        error: true,
+        message: 'No se encontró ningún grupo'
+      });
+    }
+
+    const groupId = groupIds[0];
+    await sock.sendMessage(groupId, { text: '🔥 Mensaje automático desde la pastoral' });
 
     res.json({
       ok: true,
@@ -221,6 +307,13 @@ app.post('/run-automatizacion', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error:', error.message);
+
+    if (error.message.includes('Connection not open')) {
+      return res.status(503).json({
+        error: true,
+        message: 'WhatsApp no está conectado'
+      });
+    }
 
     res.status(500).json({
       error: true,
@@ -231,7 +324,8 @@ app.post('/run-automatizacion', async (req, res) => {
 
 // 🔹 RUTA INICIO
 app.get("/", (req, res) => {
-  const isConnected = client && client.info;
+  const isConnected = sock && sock.user;
+
   res.send(`
     <!DOCTYPE html>
     <html>
@@ -286,11 +380,11 @@ app.get("/", (req, res) => {
     </head>
     <body>
       <div class="container">
-        <h1>🔥 Bot Pastoral</h1>
+        <h1>🔥 Bot Pastoral (Baileys)</h1>
         <div class="status ${isConnected ? 'connected' : 'disconnected'}">
           ${isConnected ? '✅ Conectado a WhatsApp' : '⏳ No conectado'}
         </div>
-        ${!isConnected ? '<a href="/qr">Escanear QR</a>' : '<a href="/run-automatizacion" onclick="fetch(\'/run-automatizacion\', {method: \'POST\'}).then(r=>r.json()).then(d=>alert(d.message))">Probar Bot</a>'}
+        ${!isConnected ? '<a href="/qr">Escanear QR</a>' : '<a href="#" onclick="fetch(\'/send-group\', {method: \'POST\', headers: {\'Content-Type\': \'application/json\'}, body: JSON.stringify({message: \'🔥 Mensaje de prueba\'})}).then(r=>r.json()).then(d=>alert(d.message))">Probar Bot</a>'}
       </div>
     </body>
     </html>

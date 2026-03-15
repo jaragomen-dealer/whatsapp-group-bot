@@ -1,6 +1,6 @@
 FROM node:18-slim
 
-# Instalar dependencias del sistema necesarias para Chrome/Puppeteer
+# Instalar dependencias del sistema necesarias para Baileys
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libnss3 \
@@ -43,7 +43,6 @@ EXPOSE 3000
 
 # Variables de entorno
 ENV NODE_ENV=production
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
 
 # Comando de inicio
 CMD ["node", "index.js"]
