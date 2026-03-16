@@ -6,13 +6,38 @@ import qrcode from 'qrcode';
 const app = express();
 app.use(express.json());
 
-// Variable global para el socket
+// ============================================
+// VARIABLES GLOBALES
+// ============================================
 let sock = null;
 let reconnectAttempts = 0;
+let isDetachedFrameIgnored = false;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let currentQR = null;
 
-// Función para conectar a WhatsApp
+// ============================================
+// MANEJO GLOBAL DE ERRORES
+// ============================================
+// Ignorar específicamente errores de "detached frame"
+process.on("uncaughtException", (err) => {
+  if (err.message && err.message.includes("detached frame")) {
+    isDetachedFrameIgnored = true;
+    return; // Ignorar este error
+  }
+  console.error("❌ Uncaught Exception:", err.message);
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  if (reason instanceof Error && reason.message && reason.message.includes("detached frame")) {
+    isDetachedFrameIgnored = true;
+    return; // Ignorar este error
+  }
+  console.error("❌ Unhandled Rejection:", reason);
+});
+
+// ============================================
+// FUNCIÓN DE CONEXIÓN A WHATSAPP
+// ============================================
 async function connectToWhatsApp() {
   try {
     // Usar múltiples archivos para autenticación
@@ -22,7 +47,9 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
       auth: state,
       printQRInTerminal: false,
-      browser: ["Pastoral Bot", "Chrome", "1.0.0"]
+      browser: ["Pastoral Bot", "Chrome", "1.0.0"],
+      defaultQueryTimeoutMs: undefined,
+      keepAliveIntervalMs: 30000
     });
 
     // Guardar credenciales cuando se actualicen
@@ -45,6 +72,13 @@ async function connectToWhatsApp() {
         const shouldReconnect = lastDisconnect?.error instanceof Boom &&
           lastDisconnect.error.output?.statusCode !== DisconnectReason.loggedOut;
 
+        const isDetachedFrame = lastDisconnect?.error?.message?.includes('detached frame');
+
+        if (isDetachedFrame) {
+          console.log('⚠️ Detached frame detectado (ignorado)');
+          return; // No reconectar por detached frame
+        }
+
         console.log('❌ Conexión cerrada:', lastDisconnect?.error?.message);
 
         if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -56,14 +90,21 @@ async function connectToWhatsApp() {
           console.log('❌ Máximo de intentos de reconexión alcanzados');
         }
       } else if (connection === 'open') {
-        console.log('✅ WhatsApp conectado!');
+        console.log('✅ WhatsApp listo!');
         reconnectAttempts = 0;
         currentQR = null;
       }
     });
 
   } catch (error) {
+    // Ignorar errores de detached frame
+    if (error.message && error.message.includes("detached frame")) {
+      console.log('⚠️ Detached frame en inicialización (ignorado)');
+      return;
+    }
+
     console.error('❌ Error al conectar:', error.message);
+
     if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
       reconnectAttempts++;
       console.log(`🔄 Reconectando... (intento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
@@ -73,11 +114,30 @@ async function connectToWhatsApp() {
   }
 }
 
-// Iniciar conexión
+// ============================================
+// INICIAR CONEXIÓN
+// ============================================
 console.log('⏳ Inicializando bot de WhatsApp...');
 connectToWhatsApp();
 
-// 🔥 ENDPOINT QR - Muestra el QR visualmente
+// ============================================
+// ENDPOINT GET / - Texto simple
+// ============================================
+app.get("/", (req, res) => {
+  res.send("Bot WhatsApp funcionando");
+});
+
+// ============================================
+// ENDPOINT GET /status - Estado de conexión
+// ============================================
+app.get("/status", (req, res) => {
+  const conectado = !!(sock && sock.user);
+  res.json({ conectado });
+});
+
+// ============================================
+// ENDPOINT GET /qr - Visualización del QR
+// ============================================
 app.get('/qr', (req, res) => {
   if (!currentQR) {
     return res.send(`
@@ -199,14 +259,43 @@ app.get('/qr', (req, res) => {
   `);
 });
 
-// 🔥 ENDPOINT /send-group - Simplificado y estable
+// ============================================
+// ENDPOINT POST /send-group - Envío a grupos con retry
+// ============================================
+async function sendWithRetry(groupId, message, maxRetries = 2) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await sock.sendMessage(groupId, { text: message });
+      return { success: true };
+    } catch (error) {
+      // Ignorar detached frame
+      if (error.message && error.message.includes("detached frame")) {
+        console.log(`⚠️ Detached frame en intento ${attempt}/${maxRetries} (ignorado)`);
+        if (attempt < maxRetries) {
+          await delay(1000);
+          continue;
+        }
+        return { success: false, error: "Detached frame" };
+      }
+
+      if (attempt === maxRetries) {
+        throw error;
+      }
+
+      console.log(`⚠️ Intento ${attempt}/${maxRetries} falló, reintentando...`);
+      await delay(1000);
+    }
+  }
+  return { success: false, error: "Max retries reached" };
+}
+
 app.post('/send-group', async (req, res) => {
   try {
-    // Validar que sock existe y está conectado
+    // Validar que sock existe
     if (!sock) {
       return res.status(500).json({
-        error: true,
-        message: 'Socket no inicializado'
+        success: false,
+        error: 'Socket no inicializado'
       });
     }
 
@@ -215,8 +304,8 @@ app.post('/send-group', async (req, res) => {
 
     if (!message) {
       return res.status(400).json({
-        error: true,
-        message: 'Mensaje es requerido'
+        success: false,
+        error: 'Mensaje es requerido'
       });
     }
 
@@ -228,46 +317,60 @@ app.post('/send-group', async (req, res) => {
 
     if (groupIds.length === 0) {
       return res.status(404).json({
-        error: true,
-        message: 'No se encontró ningún grupo'
+        success: false,
+        error: 'No se encontró ningún grupo'
       });
     }
 
     // Usar el primer grupo
     const groupId = groupIds[0];
 
-    // Enviar mensaje
-    await sock.sendMessage(groupId, { text: message });
+    // Enviar mensaje con retry
+    const result = await sendWithRetry(groupId, message, 2);
 
-    res.json({
-      ok: true,
-      message: 'Mensaje enviado correctamente'
-    });
+    if (result.success) {
+      res.json({ success: true });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error || 'Error al enviar mensaje'
+      });
+    }
 
   } catch (error) {
     console.error('❌ Error enviando mensaje:', error.message);
 
+    // Ignorar detached frame
+    if (error.message && error.message.includes("detached frame")) {
+      return res.status(503).json({
+        success: false,
+        error: 'Detached frame detectado, reintentando...'
+      });
+    }
+
     // Manejar errores específicos de Baileys
     if (error.message.includes('Connection not open') || error.message.includes('socket not open')) {
       return res.status(503).json({
-        error: true,
-        message: 'WhatsApp no está conectado. Intenta nuevamente en unos segundos.'
+        success: false,
+        error: 'WhatsApp no está conectado. Intenta nuevamente en unos segundos.'
       });
     }
 
     res.status(500).json({
-      error: true,
-      message: error.message
+      success: false,
+      error: error.message
     });
   }
 });
 
-// Endpoint legacy /run-automatizacion (redirige a /send-group)
+// ============================================
+// ENDPOINT LEGACY /run-automatizacion
+// ============================================
 app.post('/run-automatizacion', async (req, res) => {
   try {
     if (!sock) {
       return res.status(500).json({
-        error: true,
+        ok: false,
         message: 'Socket no inicializado'
       });
     }
@@ -277,106 +380,53 @@ app.post('/run-automatizacion', async (req, res) => {
 
     if (groupIds.length === 0) {
       return res.status(404).json({
-        error: true,
+        ok: false,
         message: 'No se encontró ningún grupo'
       });
     }
 
     const groupId = groupIds[0];
-    await sock.sendMessage(groupId, { text: '🔥 Mensaje automático desde la pastoral' });
+    const result = await sendWithRetry(groupId, '🔥 Mensaje automático desde la pastoral', 2);
 
-    res.json({
-      ok: true,
-      message: 'Mensaje enviado correctamente'
-    });
+    if (result.success) {
+      res.json({
+        ok: true,
+        message: 'Mensaje enviado correctamente'
+      });
+    } else {
+      res.status(500).json({
+        ok: false,
+        message: result.error || 'Error al enviar mensaje'
+      });
+    }
 
   } catch (error) {
     console.error('❌ Error:', error.message);
 
+    if (error.message && error.message.includes("detached frame")) {
+      return res.status(503).json({
+        ok: false,
+        message: 'Detached frame detectado'
+      });
+    }
+
     if (error.message.includes('Connection not open') || error.message.includes('socket not open')) {
       return res.status(503).json({
-        error: true,
+        ok: false,
         message: 'WhatsApp no está conectado'
       });
     }
 
     res.status(500).json({
-      error: true,
+      ok: false,
       message: error.message
     });
   }
 });
 
-// 🔹 RUTA INICIO
-app.get("/", (req, res) => {
-  const isConnected = sock && sock.user;
-
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Bot Pastoral</title>
-      <meta charset="UTF-8">
-      <style>
-        body {
-          font-family: Arial, sans-serif;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          height: 100vh;
-          margin: 0;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        }
-        .container {
-          background: white;
-          padding: 40px;
-          border-radius: 20px;
-          box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-          text-align: center;
-        }
-        h1 {
-          color: #667eea;
-          margin-bottom: 20px;
-        }
-        .status {
-          font-size: 24px;
-          margin: 20px 0;
-        }
-        .connected {
-          color: #10b981;
-        }
-        .disconnected {
-          color: #f59e0b;
-        }
-        a {
-          display: inline-block;
-          margin: 10px;
-          padding: 12px 24px;
-          background: #667eea;
-          color: white;
-          text-decoration: none;
-          border-radius: 8px;
-          transition: background 0.3s;
-        }
-        a:hover {
-          background: #764ba2;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>🔥 Bot Pastoral (Baileys)</h1>
-        <div class="status ${isConnected ? 'connected' : 'disconnected'}">
-          ${isConnected ? '✅ Conectado a WhatsApp' : '⏳ No conectado'}
-        </div>
-        ${!isConnected ? '<a href="/qr">Escanear QR</a>' : '<a href="#" onclick="fetch(\'/send-group\', {method: \'POST\', headers: {\'Content-Type\': \'application/json\'}, body: JSON.stringify({message: \'🔥 Mensaje de prueba\'})}).then(r=>r.json()).then(d=>alert(d.message))">Probar Bot</a>'}
-      </div>
-    </body>
-    </html>
-  `);
-});
-
-// 🔹 SERVIDOR
+// ============================================
+// SERVIDOR
+// ============================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
